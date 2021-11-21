@@ -24,7 +24,7 @@ func main() {
 	}
 
 	// Create ECLA
-	ec := ecla.New("NATS").SetOnBeacon(func(packet ecla.BeaconPacket) {
+	ec := ecla.New("NATS", true).SetOnBeacon(func(packet ecla.BeaconPacket) {
 		packet.Addr = id
 
 		fmt.Println("== [ECLA] Got BeaconPacket")
@@ -34,13 +34,13 @@ func main() {
 			_ = nc.Publish("beacon", data)
 		}
 	}).SetOnForwardData(func(packet ecla.ForwardDataPacket) {
-		packet.From = id
+		packet.Src = id
 
 		fmt.Println("== [ECLA] Got ForwardDataPacket")
 		spew.Dump(packet)
 
 		if data, err := json.Marshal(packet); err == nil {
-			_ = nc.Publish(packet.To, data)
+			_ = nc.Publish(packet.Dst, data)
 		}
 	})
 

@@ -9,15 +9,15 @@ import (
 )
 
 func main() {
-	conA := ecla.New("2DirectConn")
-	conB := ecla.New("2DirectConn")
+	conA := ecla.New("2DirectConn", false)
+	conB := ecla.New("2DirectConn", false)
 
 	conA.SetOnBeacon(func(packet ecla.BeaconPacket) {
 		packet.Addr = "conA"
 		conB.InsertBeaconPacket(packet)
 	}).SetOnForwardData(func(packet ecla.ForwardDataPacket) {
-		packet.From = "conA"
-		if packet.To == "conB" {
+		packet.Src = "conA"
+		if packet.Dst == "conB" {
 			conB.InsertForwardDataPacket(packet)
 		}
 	})
@@ -26,8 +26,8 @@ func main() {
 		packet.Addr = "conB"
 		conA.InsertBeaconPacket(packet)
 	}).SetOnForwardData(func(packet ecla.ForwardDataPacket) {
-		packet.From = "conB"
-		if packet.To == "conA" {
+		packet.Src = "conB"
+		if packet.Dst == "conA" {
 			conA.InsertForwardDataPacket(packet)
 		}
 	})

@@ -5,80 +5,128 @@ import (
 	"errors"
 	"log"
 	"net/url"
+	"sync"
 	"time"
 
 	"github.com/gorilla/websocket"
 )
 
+type State int
+
+const (
+	StateBeforeOpen   = State(0)
+	StateConnected    = State(1)
+	StateReconnecting = State(2)
+)
+
 type ECLA struct {
-	moduleName string
-	conn       *websocket.Conn
-	done       chan struct{}
+	sync.Mutex
+
+	addr         string
+	state        State
+	moduleName   string
+	enableBeacon bool
+	conn         *websocket.Conn
+	done         chan struct{}
 
 	fnOnBeacon      func(packet BeaconPacket)
 	fnOnForwardData func(packet ForwardDataPacket)
 }
 
-func New(moduleName string) *ECLA {
+func New(moduleName string, enableBeacon bool) *ECLA {
 	return &ECLA{
-		moduleName: moduleName,
+		state:        StateBeforeOpen,
+		moduleName:   moduleName,
+		enableBeacon: enableBeacon,
 	}
 }
 
 func (ecla *ECLA) SetOnBeacon(fnOnBeacon func(packet BeaconPacket)) *ECLA {
+	ecla.Lock()
+	defer ecla.Unlock()
+
 	ecla.fnOnBeacon = fnOnBeacon
 	return ecla
 }
 
 func (ecla *ECLA) SetOnForwardData(fnOnForwardData func(packet ForwardDataPacket)) *ECLA {
+	ecla.Lock()
+	defer ecla.Unlock()
+
 	ecla.fnOnForwardData = fnOnForwardData
 	return ecla
+}
+
+func (ecla *ECLA) startReconnect() {
+	ecla.state = StateReconnecting
 }
 
 func (ecla *ECLA) handler() {
 	defer close(ecla.done)
 	for {
-		_, message, err := ecla.conn.ReadMessage()
-		if err != nil {
-			log.Println("read:", err)
-			return
-		}
+		switch ecla.state {
+		case StateReconnecting:
+			log.Println("reconnecting...")
 
-		var typePart TypePacket
-		if err := json.Unmarshal(message, &typePart); err != nil {
-			log.Println("packet type err:", err)
-			return
-		}
+			if err := ecla.Dial(ecla.addr); err == nil {
+				ecla.state = StateConnected
+			} else {
+				time.Sleep(time.Second)
+			}
+		case StateConnected:
+			_, message, err := ecla.conn.ReadMessage()
+			if err != nil {
+				log.Println("read:", err)
+				ecla.startReconnect()
+				continue
+			}
 
-		switch typePart.Type {
-		case BeaconPacketType:
-			var beaconPacket BeaconPacket
-			if err := json.Unmarshal(message, &beaconPacket); err != nil {
+			var typePart TypePacket
+			if err := json.Unmarshal(message, &typePart); err != nil {
 				log.Println("packet type err:", err)
-				return
+				ecla.startReconnect()
+				continue
 			}
 
-			if ecla.fnOnBeacon != nil {
-				ecla.fnOnBeacon(beaconPacket)
-			}
-		case ForwardDataPacketType:
-			var forwardPacket ForwardDataPacket
-			if err := json.Unmarshal(message, &forwardPacket); err != nil {
-				log.Println("packet type err:", err)
-				return
-			}
+			switch typePart.Type {
+			case BeaconPacketType:
+				var beaconPacket BeaconPacket
+				if err := json.Unmarshal(message, &beaconPacket); err != nil {
+					log.Println("packet type err:", err)
+					ecla.startReconnect()
+					continue
+				}
 
-			if ecla.fnOnForwardData != nil {
-				ecla.fnOnForwardData(forwardPacket)
+				if ecla.fnOnBeacon != nil {
+					ecla.fnOnBeacon(beaconPacket)
+				}
+			case ForwardDataPacketType:
+				var forwardPacket ForwardDataPacket
+				if err := json.Unmarshal(message, &forwardPacket); err != nil {
+					log.Println("packet type err:", err)
+					ecla.startReconnect()
+					continue
+				}
+
+				if ecla.fnOnForwardData != nil {
+					ecla.fnOnForwardData(forwardPacket)
+				}
+			default:
+				log.Println("unknown packet type:", typePart.Type)
 			}
 		}
 	}
 }
 
 func (ecla *ECLA) Dial(addr string) error {
-	if ecla.done != nil {
+	ecla.Lock()
+	defer ecla.Unlock()
+
+	if ecla.state == StateConnected {
 		return errors.New("conn already opened once")
 	}
+
+	ecla.addr = addr
 
 	u := url.URL{Scheme: "ws", Host: addr, Path: ""}
 	log.Printf("connecting to %s", u.String())
@@ -93,19 +141,25 @@ func (ecla *ECLA) Dial(addr string) error {
 	ecla.conn.SetPingHandler(nil)
 	ecla.conn.SetPongHandler(nil)
 
-	ecla.done = make(chan struct{})
+	if ecla.state == StateBeforeOpen {
+		ecla.done = make(chan struct{})
+		ecla.state = StateConnected
+		go ecla.handler()
+	}
 
-	go ecla.handler()
-
-	_ = c.WriteJSON(IdentPacket{
-		Type: IdentPacketType,
-		Name: ecla.moduleName,
+	_ = c.WriteJSON(RegisterPacket{
+		Type:         RegisterPacketType,
+		Name:         ecla.moduleName,
+		EnableBeacon: ecla.enableBeacon,
 	})
 
 	return nil
 }
 
 func (ecla *ECLA) Close() error {
+	ecla.Lock()
+	defer ecla.Unlock()
+
 	err := ecla.conn.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
 	if err != nil {
 		return err
@@ -120,6 +174,9 @@ func (ecla *ECLA) Close() error {
 }
 
 func (ecla *ECLA) InsertBeaconPacket(packet BeaconPacket) {
+	ecla.Lock()
+	defer ecla.Unlock()
+
 	if ecla.conn == nil {
 		return
 	}
@@ -128,6 +185,9 @@ func (ecla *ECLA) InsertBeaconPacket(packet BeaconPacket) {
 }
 
 func (ecla *ECLA) InsertForwardDataPacket(packet ForwardDataPacket) {
+	ecla.Lock()
+	defer ecla.Unlock()
+
 	if ecla.conn == nil {
 		return
 	}
