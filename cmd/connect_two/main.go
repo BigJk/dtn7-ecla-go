@@ -9,8 +9,8 @@ import (
 )
 
 func main() {
-	conA := ecla.New("2DirectConn", false)
-	conB := ecla.New("2DirectConn", false)
+	conA := ecla.New("2DirectConn", true)
+	conB := ecla.New("2DirectConn", true)
 
 	conA.SetOnBeacon(func(packet ecla.BeaconPacket) {
 		packet.Addr = "conA"
