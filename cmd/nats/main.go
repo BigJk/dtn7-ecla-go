@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/BigJk/dtn7-ecla-go/pkg/ecla/ws"
 	"log"
 	"math/rand"
 	"os"
@@ -24,7 +25,7 @@ func main() {
 	}
 
 	// Create ECLA
-	ec := ecla.New("NATS", true).SetOnBeacon(func(packet ecla.BeaconPacket) {
+	ec := ws.New("NATS", true).WithOnBeacon(func(packet ecla.BeaconPacket) {
 		packet.Addr = id
 
 		fmt.Println("== [ECLA] Got BeaconPacket")
@@ -33,7 +34,7 @@ func main() {
 		if data, err := json.Marshal(packet); err == nil {
 			_ = nc.Publish("beacon", data)
 		}
-	}).SetOnForwardData(func(packet ecla.ForwardDataPacket) {
+	}).WithOnForwardData(func(packet ecla.ForwardDataPacket) {
 		packet.Src = id
 
 		fmt.Println("== [ECLA] Got ForwardDataPacket")
@@ -72,9 +73,11 @@ func main() {
 	})
 
 	// Dial to ECLA
-	if err := ec.Dial(os.Getenv("ECLA_BIND")); err != nil {
-		log.Fatal(err)
-	}
+	go func() {
+		if err := ec.Dial(os.Getenv("ECLA_BIND")); err != nil {
+			log.Fatal(err)
+		}
+	}()
 
 	interrupt := make(chan os.Signal, 1)
 	signal.Notify(interrupt, os.Interrupt)
